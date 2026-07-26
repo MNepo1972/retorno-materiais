@@ -434,6 +434,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <input type="date" id="sfFFim" onchange="filterSf()">
     <button class="btn ml" onclick="clrSfFilt()">↺ Limpar</button>
     <button class="btn pri" onclick="openSfNovo()">+ Novo</button>
+    <button class="btn" onclick="openFornMerge()" title="Unificar nomes de fornecedor duplicados">🔀 Unificar fornecedores</button>
   </div>
 
   <!-- tabela -->
@@ -566,6 +567,38 @@ tr:hover td{background:rgba(255,255,255,.02)}
 </div>
 
 <!-- MODAL SAÍDA FORNECEDORES -->
+<!-- MODAL UNIFICAR FORNECEDORES -->
+<div class="ov" id="fmMdl">
+  <div class="mdl" style="width:720px;max-height:88vh;display:flex;flex-direction:column">
+    <div class="mh">
+      <span class="mt">🔀 Unificar fornecedores</span>
+      <button class="btn" onclick="clsFornMerge()">✕</button>
+    </div>
+    <div class="mb" style="overflow:auto">
+      <p style="font-size:13px;color:var(--mut);margin:0 0 14px;line-height:1.5">
+        Marque todas as variações que são o <b>mesmo</b> fornecedor, digite (ou escolha) o nome correto e clique em unificar.
+        Isso reescreve todos os lançamentos e, se houver integração, os registros correspondentes no PaletCD.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="fld" style="flex:1;min-width:240px">
+          <label>Nome correto (destino)</label>
+          <input type="text" id="fmAlvo" placeholder="Ex: NESTLÉ BRASIL LTDA" list="fmAlvoList" autocomplete="off" oninput="fmResumo()">
+          <datalist id="fmAlvoList"></datalist>
+        </div>
+        <div class="fld" style="width:150px">
+          <input type="text" id="fmSrch" placeholder="🔍 filtrar lista" oninput="renderFmList()">
+        </div>
+      </div>
+      <div id="fmList" style="border:1px solid var(--bdr,#2a3646);border-radius:8px;max-height:340px;overflow:auto"></div>
+      <div id="fmResumo" style="font-size:12px;color:var(--mut);margin-top:10px"></div>
+    </div>
+    <div style="padding:14px 18px;border-top:1px solid var(--bdr,#2a3646);display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn" onclick="clsFornMerge()">Cancelar</button>
+      <button class="btn pri" id="fmBtn" onclick="doFornMerge()">🔀 Unificar selecionados</button>
+    </div>
+  </div>
+</div>
+
 <div class="ov" id="sfMdl">
   <div class="mdl" style="width:620px">
     <div class="mh">
@@ -1823,6 +1856,116 @@ function sfBuildFornList(){
 }
 const SF_PS=25;
 
+// ===================== UNIFICAR FORNECEDORES =====================
+let FM_SEL=new Set();
+
+function fmContagem(){
+  // {nomeOriginal: {qtd, key}} — key uppercase p/ deduplicar
+  const map={};
+  SF_ALL.forEach(r=>{
+    const nome=String(r.fornecedor||'').trim();
+    if(!nome) return;
+    const k=nome.toUpperCase();
+    if(!map[k]) map[k]={nome, qtd:0};
+    map[k].qtd++;
+  });
+  return map;
+}
+
+function openFornMerge(){
+  if(!isAdmin()){ admAsk('fornmerge'); return; }
+  FM_SEL.clear();
+  $('fmAlvo').value=''; $('fmSrch').value='';
+  const map=fmContagem();
+  const nomes=Object.values(map).map(x=>x.nome).sort((a,b)=>a.localeCompare(b,'pt'));
+  $('fmAlvoList').innerHTML=nomes.map(n=>'<option value="'+n.replace(/"/g,'&quot;')+'">').join('');
+  renderFmList();
+  $('fmMdl').classList.add('open');
+}
+function clsFornMerge(){ $('fmMdl').classList.remove('open'); }
+
+function renderFmList(){
+  const map=fmContagem();
+  const filtro=String($('fmSrch').value||'').trim().toUpperCase();
+  let itens=Object.entries(map).map(([k,v])=>({k, nome:v.nome, qtd:v.qtd}));
+  if(filtro) itens=itens.filter(x=>x.k.includes(filtro));
+  itens.sort((a,b)=>b.qtd-a.qtd || a.nome.localeCompare(b.nome,'pt'));
+
+  const el=$('fmList');
+  if(!itens.length){ el.innerHTML='<div style="padding:16px;color:var(--mut);font-size:13px">Nenhum fornecedor encontrado.</div>'; return; }
+  el.innerHTML=itens.map(x=>{
+    const on=FM_SEL.has(x.k)?'checked':'';
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--bdr,#2a3646);cursor:pointer;font-size:13px">'+
+      '<input type="checkbox" '+on+' onchange="fmToggle(\''+x.k.replace(/'/g,"\\'")+'\')" style="width:16px;height:16px;flex:none">'+
+      '<span style="flex:1">'+x.nome.replace(/</g,'&lt;')+'</span>'+
+      '<span style="font-family:monospace;color:var(--mut);flex:none">'+x.qtd+' lanç.</span>'+
+      '<button class="btn" style="padding:2px 8px;font-size:11px;flex:none" onclick="fmUsarComoAlvo(event,\''+x.nome.replace(/'/g,"\\'").replace(/"/g,'&quot;')+'\')">usar como destino</button>'+
+      '</label>';
+  }).join('');
+  fmResumo();
+}
+function fmToggle(k){ if(FM_SEL.has(k))FM_SEL.delete(k); else FM_SEL.add(k); fmResumo(); }
+function fmUsarComoAlvo(ev,nome){ ev.preventDefault(); ev.stopPropagation(); $('fmAlvo').value=nome; fmResumo(); }
+function fmResumo(){
+  const alvo=String($('fmAlvo').value||'').trim();
+  const map=fmContagem();
+  let n=0; FM_SEL.forEach(k=>{ if(map[k]) n+=map[k].qtd; });
+  const el=$('fmResumo');
+  if(!FM_SEL.size){ el.textContent=''; return; }
+  el.innerHTML='Selecionados: <b>'+FM_SEL.size+'</b> nome(s), <b>'+n+'</b> lançamento(s)'+
+    (alvo?(' → serão renomeados para <b>'+alvo.replace(/</g,'&lt;')+'</b>'):' <span style="color:var(--wrn,#e0a800)">(defina o nome destino)</span>');
+}
+
+async function doFornMerge(){
+  const alvo=String($('fmAlvo').value||'').trim();
+  if(!alvo) return ntfy('Defina o nome correto (destino).','er');
+  if(!FM_SEL.size) return ntfy('Marque pelo menos um fornecedor.','er');
+
+  const alvoKey=alvo.toUpperCase();
+  const alvos=[...FM_SEL];
+  // Lançamentos afetados: os selecionados cujo nome ≠ destino
+  const afetados=SF_ALL.filter(r=>{
+    const k=String(r.fornecedor||'').trim().toUpperCase();
+    return alvos.includes(k) && k!==alvoKey;
+  });
+  if(!afetados.length) return ntfy('Nada a renomear (os selecionados já têm o nome destino).','ok');
+
+  if(!confirm('Unificar '+afetados.length+' lançamento(s) para "'+alvo+'"?\nEsta ação reescreve GODMODE e o PaletCD ligado. Não dá para desfazer em lote.')) return;
+
+  const btn=$('fmBtn'); btn.disabled=true; const txt=btn.textContent; btn.textContent='Unificando…';
+  let ok=0, erroPalet=0;
+  try{
+    for(const r of afetados){
+      r.fornecedor=alvo;
+      if(fbReady&&DB) await DB.ref('retorno_app/saida_fornecedores/'+r.id+'/fornecedor').set(alvo);
+      // Propaga para o PaletCD se este lançamento gerou registros lá
+      const ps=r.palet_sync;
+      if(ps){
+        try{
+          await paletcdInit();
+          const root=PALETCD_DB.ref('palet_app/v2');
+          if(ps.rcfId)    await root.child('recebForn/'+ps.rcfId+'/fornecedor').set(alvo);
+          if(ps.movRecId) await root.child('movs/'+ps.movRecId).update({forn:alvo, origem:alvo});
+          if(ps.movPagId) await root.child('movs/'+ps.movPagId+'/forn').set(alvo);
+        }catch(e){ erroPalet++; console.warn('PaletCD merge falhou p/ '+r.id, e.message); }
+      }
+      ok++;
+    }
+    saveSfCache();
+    sfBuildFornList();
+    if(typeof filterSf==='function') filterSf(); else renderSf();
+    let msg='✅ '+ok+' lançamento(s) unificados para "'+alvo+'"';
+    if(erroPalet) msg+=' · ⚠️ '+erroPalet+' não sincronizados no PaletCD';
+    ntfy(msg, erroPalet?'er':'ok');
+    clsFornMerge();
+  }catch(e){
+    ntfy('Erro ao unificar: '+e.message,'er');
+  }finally{
+    btn.disabled=false; btn.textContent=txt;
+  }
+}
+// ===================== FIM UNIFICAR FORNECEDORES =====================
+
 function loadSfCache(){
   try{const c=localStorage.getItem('sf_c');if(c)SF_ALL=JSON.parse(c);}catch(e){SF_ALL=[];}
   sfBuildFornList();
@@ -1925,7 +2068,8 @@ async function admOk(){
     await admApp().auth().signInWithEmailAndPassword(em,pw);
     $('admMdl').classList.remove('open');
     const p=_admPend;_admPend=null;
-    if(p)go(p);
+    if(p==='fornmerge'){openFornMerge();}
+    else if(p)go(p);
   }catch(e){
     const m={'auth/invalid-credential':'E-mail ou senha incorretos.','auth/wrong-password':'Senha incorreta.','auth/user-not-found':'Usuário não existe.','auth/too-many-requests':'Muitas tentativas. Aguarde.','auth/network-request-failed':'Sem conexão.'};
     $('admErr').textContent=m[e.code]||('Login falhou: '+(e.code||e.message));
