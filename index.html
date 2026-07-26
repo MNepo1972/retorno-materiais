@@ -1889,7 +1889,7 @@ function renderFmList(){
   const filtro=String($('fmSrch').value||'').trim().toUpperCase();
   let itens=Object.entries(map).map(([k,v])=>({k, nome:v.nome, qtd:v.qtd}));
   if(filtro) itens=itens.filter(x=>x.k.includes(filtro));
-  itens.sort((a,b)=>b.qtd-a.qtd || a.nome.localeCompare(b.nome,'pt'));
+  itens.sort((a,b)=>a.nome.localeCompare(b.nome,'pt',{sensitivity:'base'}));
 
   const el=$('fmList');
   if(!itens.length){ el.innerHTML='<div style="padding:16px;color:var(--mut);font-size:13px">Nenhum fornecedor encontrado.</div>'; return; }
