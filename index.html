@@ -1,14 +1,12 @@
 <!DOCTYPE html>
-<!-- saved from url=(0056)https://mnepomuceno20111972.github.io/retorno-materiais/ -->
 <html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Retorno de Materiais — GODMODE</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=&#39;http://www.w3.org/2000/svg&#39; viewBox=&#39;0 0 100 100&#39;%3E%3Ctext y=&#39;.9em&#39; font-size=&#39;90&#39;%3E%F0%9F%94%84%3C/text%3E%3C/svg%3E">
-<script src="./Retorno de Materiais — GODMODE_files/firebase-app-compat.js.baixados"></script>
-<script src="./Retorno de Materiais — GODMODE_files/firebase-database-compat.js.baixados"></script>
-<script src="./Retorno de Materiais — GODMODE_files/firebase-auth-compat.js.baixados"></script>
-<script src="./Retorno de Materiais — GODMODE_files/supabase-js@2"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
 :root{--bg:#f5f7fb;--bg2:#ffffff;--bg3:#eef2f9;--bdr:#e3e8f2;--bdr2:#c9d2e4;--acc:#2563eb;--acc2:#1d4ed8;--grn:#16a34a;--red:#dc2626;--amb:#d97706;--txt:#161c2d;--mut:#6b7690;--card:#ffffff;--r:8px;--rl:14px;--sh:0 1px 2px rgba(16,24,40,.04),0 4px 12px rgba(16,24,40,.05);--sh2:0 2px 4px rgba(16,24,40,.05),0 12px 28px rgba(16,24,40,.09)}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3154,6 +3152,10 @@ function exportAudit(erros){
 }
 let _admPend=null, _admUser=null;
 function admApp(){
+  if(typeof firebase==='undefined'){
+    console.warn('SDK do Firebase indisponivel — modo admin desativado.');
+    return null;
+  }
   return firebase.apps.find(a=>a.name==='produtivix')
        ||firebase.initializeApp(PVX_CONFIG,'produtivix');
 }
@@ -3169,7 +3171,9 @@ async function admOk(){
   if(!em||!pw){$('admErr').textContent='Informe e-mail e senha.';return;}
   $('admErr').textContent='Entrando…';
   try{
-    await admApp().auth().signInWithEmailAndPassword(em,pw);
+    const _a=admApp();
+    if(!_a){$('admErr').textContent='Firebase nao carregou. Verifique a conexao e recarregue a pagina.';return;}
+    await _a.auth().signInWithEmailAndPassword(em,pw);
     $('admMdl').classList.remove('open');
     const p=_admPend;_admPend=null;
     if(p==='fornmerge'){openFornMerge();}
@@ -3180,12 +3184,16 @@ async function admOk(){
   }
 }
 function admCancel(){_admPend=null;$('admMdl').classList.remove('open');}
-function admLogout(){admApp().auth().signOut();go('dash');}
+function admLogout(){const a=admApp();if(a)a.auth().signOut();go('dash');}
 // Restaura sessão ao carregar (persistência local do Firebase)
-admApp().auth().onAuthStateChanged(u=>{
-  _admUser=u;
-  const el=$('nav-admout'); if(el) el.style.display=isAdmin()?'':'none';
-});
+(function(){
+  const a=admApp();
+  if(!a){const el=$('nav-admout');if(el)el.style.display='none';return;}
+  a.auth().onAuthStateChanged(u=>{
+    _admUser=u;
+    const el=$('nav-admout'); if(el) el.style.display=isAdmin()?'':'none';
+  });
+})();
 
 // ===== MIGRAÇÃO PRODUTIVIX =====
 const PVX_NODE='produtivix_v6';
@@ -3197,7 +3205,9 @@ let PVX_DB=null, _pvxCands=null;
 // validada pelas rules do Realtime Database.
 function pvxInit(){
   if(!isAdmin()) throw new Error('Faça login de administrador antes de migrar.');
-  PVX_DB=admApp().database();
+  const _a=admApp();
+  if(!_a) throw new Error('Firebase nao carregou.');
+  PVX_DB=_a.database();
   return Promise.resolve();
 }
 async function pvxLoad(){
