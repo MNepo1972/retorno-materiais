@@ -3404,13 +3404,11 @@ async function pvxInit(){
       try{ await _a.auth().signInWithEmailAndPassword(_admCred.em,_admCred.pw); ok=true; }
       catch(e){ ok=false; }
     }
-    // 2) fallback: sessao anonima (funciona se as regras do ProdutiVix permitirem)
-    if(!ok){
-      try{ await _a.auth().signInAnonymously(); ok=true; }
-      catch(e){ ok=false; }
-    }
-    if(!ok) throw new Error('Sem acesso ao projeto ProdutiVix. A conta '+
-      ((_admCred&&_admCred.em)||'atual')+' precisa existir no projeto controle-de-paletes-c76d5.');
+    // Sem fallback anonimo: o ProdutiVix exige admin real. Anonimo passaria no
+    // login e so falharia na hora da escrita, escondendo a causa verdadeira.
+    if(!ok) throw new Error(
+      'Sem acesso ao ProdutiVix. A conta ' + ((_admCred&&_admCred.em)||'atual') +
+      ' precisa existir no projeto controle-de-paletes-c76d5 E estar no no /admins de la.');
   }
 
   PVX_DB=_a.database();
