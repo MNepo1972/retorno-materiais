@@ -1807,17 +1807,112 @@ async function lerJanela(node, campoData, dias){
   return snap.val()||{};
 }
 
+
+// ===== SINCRONIZACAO INCREMENTAL =====
+// Antes: cada abertura baixava a janela inteira (~4MB x 60 aberturas/dia = ~8GB/mes).
+// Agora: o navegador guarda o que ja tem e pede ao Firebase apenas os registros
+// criados depois da ultima sincronizacao. Recargas seguintes pesam quase nada.
+
+const SYNC_CFG = {
+  rm : {node:'retorno_app/retorno_materiais', campoData:'data',             cache:'rm_full'},
+  tri: {node:'retorno_app/triagem',           campoData:'data_recebimento', cache:'tri_full'},
+  sf : {node:'retorno_app/saida_fornecedores',campoData:'data',             cache:'sf_full'}
+};
+
+function syncLer(chave){
+  try{
+    const raw=localStorage.getItem(SYNC_CFG[chave].cache);
+    if(!raw) return null;
+    const o=JSON.parse(raw);
+    if(!o || !Array.isArray(o.itens)) return null;
+    if(Number(o.janela)!==Number(JANELA_DIAS)) return null; // janela mudou, recarrega
+    return o;
+  }catch(e){ return null; }
+}
+
+function syncGravar(chave, itens, ultimoTs){
+  try{
+    localStorage.setItem(SYNC_CFG[chave].cache, JSON.stringify({
+      janela:Number(JANELA_DIAS), ts:ultimoTs, itens:itens
+    }));
+  }catch(e){
+    // localStorage cheio: descarta metade mais antiga e tenta de novo
+    try{
+      localStorage.setItem(SYNC_CFG[chave].cache, JSON.stringify({
+        janela:Number(JANELA_DIAS), ts:ultimoTs, itens:itens.slice(0,Math.floor(itens.length/2))
+      }));
+    }catch(e2){}
+  }
+}
+
+function maiorTs(itens){
+  let m='';
+  for(const i of itens){ const t=i.created_at||''; if(t>m) m=t; }
+  return m;
+}
+
+// Retorna os registros da janela, baixando do servidor apenas o que e novo.
+async function syncJanela(chave){
+  const cfg=SYNC_CFG[chave];
+  const corte=dataCorte();
+  const cache=syncLer(chave);
+
+  // --- Sem cache: carga completa da janela (acontece 1x) ---
+  if(!cache || !cache.ts){
+    const snap=await DB.ref(cfg.node).orderByChild(cfg.campoData).startAt(corte).once('value');
+    const itens=Object.values(snap.val()||{});
+    syncGravar(chave, itens, maiorTs(itens));
+    _syncInfo[chave]={modo:'completa', baixados:itens.length, total:itens.length};
+    return itens;
+  }
+
+  // --- Com cache: pede so o que foi criado depois da ultima sync ---
+  const snap=await DB.ref(cfg.node)
+    .orderByChild('created_at').startAt(cache.ts).once('value');
+  const novos=Object.values(snap.val()||{});
+
+  // funde por id (o startAt e inclusivo, entao o ultimo registro vem repetido)
+  const mapa=new Map();
+  for(const i of cache.itens) mapa.set(i.id, i);
+  for(const i of novos)       mapa.set(i.id, i);
+
+  // descarta o que saiu da janela
+  let itens=[...mapa.values()].filter(i=>(i[cfg.campoData]||'')>=corte);
+
+  syncGravar(chave, itens, maiorTs(itens)||cache.ts);
+  _syncInfo[chave]={modo:'incremental', baixados:novos.length, total:itens.length};
+  return itens;
+}
+
+let _syncInfo={};
+
+function syncResumo(){
+  const b=Object.values(_syncInfo).reduce((a,x)=>a+(x.baixados||0),0);
+  const modo=Object.values(_syncInfo).some(x=>x.modo==='completa')?'completa':'incremental';
+  return {baixados:b, modo};
+}
+
+// Forca recarga total (usar quando desconfiar do cache)
+function syncLimpar(){
+  for(const k in SYNC_CFG) localStorage.removeItem(SYNC_CFG[k].cache);
+  ntfy('Cache limpo. Recarregando do servidor...','ok');
+  loadData();
+}
+
 async function loadData() {
   if (!fbReady || !DB) { loadCache(); return; }
   try {
-    const raw = await lerJanela('retorno_app/retorno_materiais','data');
-    ALL = Object.values(raw).sort((a,b) => (b.data||'') > (a.data||'') ? 1 : -1);
-    sts('Firebase — ' + ALL.length + ' reg. (' + JANELA_DIAS + 'd)', 'g');
+    _syncInfo={};
+    const lista = await syncJanela('rm');
+    ALL = lista.sort((a,b) => (b.data||'') > (a.data||'') ? 1 : -1);
     try { localStorage.setItem('rm_c', JSON.stringify(ALL.slice(0,2000))); } catch(e) {}
     FILT = [...ALL];
     refreshAll();
-    loadTriData();
-    loadSfData();
+    await loadTriData();
+    await loadSfData();
+    const r=syncResumo();
+    sts('Firebase — ' + ALL.length + ' reg. (' + JANELA_DIAS + 'd) · ' +
+        (r.modo==='completa' ? 'carga completa' : '+' + r.baixados + ' novos'), 'g');
   } catch(e) {
     console.error('loadData erro:', e);
     loadCache();
@@ -2328,8 +2423,8 @@ function saveTriCache(){
 async function loadTriData(){
   if(!fbReady||!DB){loadTriCache();renderTri();return}
   try{
-    const raw=await lerJanela('retorno_app/triagem','data_recebimento');
-    TRI_ALL=Object.values(raw).sort((a,b)=>(b.data_recebimento||'')>(a.data_recebimento||'')?1:-1);
+    const lista=await syncJanela('tri');
+    TRI_ALL=lista.sort((a,b)=>(b.data_recebimento||'')>(a.data_recebimento||'')?1:-1);
     saveTriCache();renderTri();
     $('navTriCnt').textContent=TRI_ALL.length;
   }catch(e){loadTriCache();renderTri();}
@@ -2942,8 +3037,8 @@ function saveSfCache(){
 async function loadSfData(){
   if(!fbReady||!DB){loadSfCache();renderSf();return}
   try{
-    const raw=await lerJanela('retorno_app/saida_fornecedores','data');
-    SF_ALL=Object.values(raw).sort((a,b)=>(b.data||'')>(a.data||'')?1:-1);
+    const lista=await syncJanela('sf');
+    SF_ALL=lista.sort((a,b)=>(b.data||'')>(a.data||'')?1:-1);
     sfBuildFornList();
     saveSfCache();renderSf();
     $('navSfCnt').textContent=SF_ALL.length;
@@ -3248,6 +3343,7 @@ async function admOk(){
     const _a=admApp();
     if(!_a){$('admErr').textContent='Firebase nao carregou. Verifique a conexao e recarregue a pagina.';return;}
     const cred=await _a.auth().signInWithEmailAndPassword(em,pw);
+    _admCred={em:em,pw:pw}; // reusado para autenticar no projeto ProdutiVix
     const ok=await admCheck(cred.user);
     if(!ok){
       $('admErr').textContent='Conta valida, mas sem permissao de administrador.';
@@ -3292,12 +3388,32 @@ let PVX_DB=null, _pvxCands=null;
 // App Firebase secundário do ProdutiVix. Sem login anônimo aqui:
 // leitura/escrita em produtivix_v6 usa a conta de administrador,
 // validada pelas rules do Realtime Database.
-function pvxInit(){
+let _admCred=null;
+
+// O ProdutiVix vive em OUTRO projeto Firebase. O login de admin autentica no
+// projeto do Retorno; aqui precisamos de uma sessao separada naquele projeto.
+async function pvxInit(){
   if(!isAdmin()) throw new Error('Faça login de administrador antes de migrar.');
   const _a=pvxApp();
   if(!_a) throw new Error('Firebase nao carregou.');
+
+  if(!_a.auth().currentUser){
+    let ok=false;
+    // 1) tenta as mesmas credenciais do login de admin
+    if(_admCred){
+      try{ await _a.auth().signInWithEmailAndPassword(_admCred.em,_admCred.pw); ok=true; }
+      catch(e){ ok=false; }
+    }
+    // 2) fallback: sessao anonima (funciona se as regras do ProdutiVix permitirem)
+    if(!ok){
+      try{ await _a.auth().signInAnonymously(); ok=true; }
+      catch(e){ ok=false; }
+    }
+    if(!ok) throw new Error('Sem acesso ao projeto ProdutiVix. A conta '+
+      ((_admCred&&_admCred.em)||'atual')+' precisa existir no projeto controle-de-paletes-c76d5.');
+  }
+
   PVX_DB=_a.database();
-  return Promise.resolve();
 }
 async function pvxLoad(){
   await pvxInit();
