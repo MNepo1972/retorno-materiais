@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- ============================================================
-     GODMODE - Retorno de Materiais | FONTE OFICIAL v32
+     GODMODE - Retorno de Materiais | FONTE OFICIAL v33
      NAO SALVAR PELO NAVEGADOR (Ctrl+S). Isso grava o DOM e os dados.
      ============================================================ -->
 <html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
@@ -1668,6 +1668,25 @@ function syncGravar(chave, itens, ultimoTs){
   }
 }
 
+// Aplica uma edicao direto no cache incremental.
+// Necessario porque syncJanela() so busca por created_at: um registro
+// EDITADO nao volta do Firebase e o cache antigo sobrescreveria a tela.
+function syncPatch(chave, id, patch){
+  const c=syncLer(chave); if(!c||!Array.isArray(c.itens)) return false;
+  const i=c.itens.findIndex(x=>x.id===id); if(i<0) return false;
+  c.itens[i]={...c.itens[i], ...patch};
+  syncGravar(chave, c.itens, c.ts);
+  return true;
+}
+
+// Remove do cache incremental (exclusao).
+function syncRemover(chave, ids){
+  const c=syncLer(chave); if(!c||!Array.isArray(c.itens)) return false;
+  const set=new Set(Array.isArray(ids)?ids:[ids]);
+  syncGravar(chave, c.itens.filter(x=>!set.has(x.id)), c.ts);
+  return true;
+}
+
 function maiorTs(itens){
   let m='';
   for(const i of itens){ const t=i.created_at||''; if(t>m) m=t; }
@@ -1896,7 +1915,8 @@ function rows(data,acts){
     const dt=r.data?r.data.substring(0,10).split('-').reverse().join('/'):'—';
     const op=(r.operador_carga||'—').split(' ').slice(0,2).join(' ');
     const cf=(r.conferente||'—').split(' ').slice(0,2).join(' ');
-    const btnDel=isAdmin()?` <button class="btn dng" style="padding:3px 8px;font-size:11px" onclick="delRec('${r.id}')">🗑</button>`:'';
+    const btnDel=isAdmin()?` <button class="btn dng" style="padding:3px 8px;font-size:11px" title="Excluir esta linha" onclick="delRec('${r.id}')">🗑</button>`
+      +` <button class="btn dng" style="padding:3px 8px;font-size:11px" title="Excluir o lancamento inteiro (todos os materiais desta NF/Loja/Data)" onclick="delRecLote('${r.id}')">🗑✱</button>`:'';
     return`<tr><td>${dt}</td><td>${r.loja||'—'}</td><td>${r.nota_fiscal||'—'}</td><td>${r.material||'—'}</td><td>${r.qtd_fisica??'—'}</td><td>${r.qtd_nf??'—'}</td><td>${tag}</td><td title="${r.operador_carga||''}">${op}</td><td title="${r.conferente||''}">${cf}</td>${acts?`<td><button class="btn" style="padding:3px 8px;font-size:11px" onclick="openEdit('${r.id}')">✏️</button>${btnDel}</td>`:'<td></td>'}</tr>`;
   }).join('');
 }
@@ -2197,17 +2217,57 @@ async function updRec(){
     material:$('eMt').value,qtd_fisica:qf,qtd_nf:qn,divergencia:(qf||0)-(qn||0),
     operador_carga:op,conferente:cf};
   const _c=chapaAtual();if(_c){rec.chapa_edicao=_c.mat;rec.editado_por=_c.nome;}
-  if(fbReady){ await fbUpdateRec(id, rec); }
-  else{ const i=ALL.findIndex(x=>x.id===id);if(i>=0){ALL[i]={...ALL[i],...rec};try{localStorage.setItem('rm_c',JSON.stringify(ALL.slice(0,2000)))}catch(e){}} }
-  ntfy('Atualizado!','ok');clsMdl(); await loadData();
+
+  if(!fbReady){
+    ntfy('Sem conexao com o Firebase — a edicao NAO foi salva. Recarregue a pagina.','er');
+    return;
+  }
+  try{
+    await fbUpdateRec(id, rec);
+  }catch(e){
+    console.error('updRec erro:', e);
+    ntfy('Falha ao salvar: '+(e&&e.message?e.message:'erro desconhecido'),'er');
+    return;
+  }
+  // Espelha no cache incremental. Sem isto a tela volta ao valor antigo.
+  syncPatch('rm', id, rec);
+  const i=ALL.findIndex(x=>x.id===id); if(i>=0) ALL[i]={...ALL[i], ...rec};
+  ntfy('Atualizado!','ok'); clsMdl(); await loadData();
 }
 
 async function delRec(id){
   if(!exigirAdmin('excluir lançamentos'))return;
-  if(!confirm('Excluir este registro?'))return;
-  if(fbReady){ await fbDeleteRec(id); }
-  else{ ALL=ALL.filter(x=>x.id!==id);try{localStorage.setItem('rm_c',JSON.stringify(ALL.slice(0,2000)))}catch(e){} }
-  ntfy('Excluído','ok'); await loadData();
+  const r=ALL.find(x=>x.id===id)||{};
+  const resumo=`${(r.data||'').slice(0,10)} · ${r.loja||'?'} · ${r.material||'?'} · Fis ${r.qtd_fisica??'-'} / NF ${r.qtd_nf??'-'}`;
+  if(!confirm('Excluir este lancamento?\n\n'+resumo+'\n\nEsta acao nao pode ser desfeita.'))return;
+  if(!fbReady){ ntfy('Sem conexao com o Firebase — nada foi excluido.','er'); return; }
+  try{ await fbDeleteRec(id); }
+  catch(e){ console.error('delRec erro:',e); ntfy('Falha ao excluir: '+(e&&e.message?e.message:'erro'),'er'); return; }
+  syncRemover('rm', id);
+  ALL=ALL.filter(x=>x.id!==id);
+  ntfy('Excluido','ok'); await loadData();
+}
+
+// Exclusao em massa: todas as linhas de uma mesma NF+Loja+Data.
+// Util quando um lancamento de varios materiais entrou errado.
+async function delRecLote(id){
+  if(!exigirAdmin('excluir lançamentos em lote'))return;
+  const base=ALL.find(x=>x.id===id); if(!base){ntfy('Registro nao encontrado','er');return}
+  const dia=(base.data||'').slice(0,10);
+  const irmaos=ALL.filter(x=>(x.data||'').slice(0,10)===dia
+    && x.loja===base.loja
+    && (x.nota_fiscal||'')===(base.nota_fiscal||''));
+  if(irmaos.length<=1){ return delRec(id); }
+  const lista=irmaos.map(x=>`  • ${x.material}: Fis ${x.qtd_fisica??'-'} / NF ${x.qtd_nf??'-'}`).join('\n');
+  if(!confirm(`Excluir TODOS os ${irmaos.length} materiais deste lancamento?\n\n`
+    +`${dia} · ${base.loja} · NF ${base.nota_fiscal||'—'}\n\n${lista}\n\nEsta acao nao pode ser desfeita.`))return;
+  if(!fbReady){ ntfy('Sem conexao com o Firebase — nada foi excluido.','er'); return; }
+  const ids=irmaos.map(x=>x.id);
+  try{ for(const i of ids) await fbDeleteRec(i); }
+  catch(e){ console.error('delRecLote erro:',e); ntfy('Falha parcial ao excluir: '+(e&&e.message?e.message:'erro'),'er'); }
+  syncRemover('rm', ids);
+  ALL=ALL.filter(x=>!ids.includes(x.id));
+  ntfy(ids.length+' registros excluidos','ok'); await loadData();
 }
 
 // EXPORT
@@ -2429,9 +2489,12 @@ async function savTriagem(){
   const op=$('trMdlOp').value;
   if(!dt||!op){ntfy('Preencha data e operador de triagem','er');return}
   const upd={data_triagem:dt,operador_triagem:op,operador_movimentacao:$('trMdlMov').value||null};
+  if(!fbReady||!DB){ ntfy('Sem conexao com o Firebase — a triagem NAO foi salva.','er'); return; }
+  try{ await DB.ref('retorno_app/triagem/'+id).update(upd); }
+  catch(e){ console.error('triagem erro:',e); ntfy('Falha ao salvar triagem: '+(e&&e.message?e.message:'erro'),'er'); return; }
   const idx=TRI_ALL.findIndex(x=>x.id===id);
   if(idx>=0){TRI_ALL[idx]={...TRI_ALL[idx],...upd};saveTriCache();}
-  if(fbReady&&DB) await DB.ref('retorno_app/triagem/'+id).update(upd);
+  syncPatch('tri', id, upd);
   ntfy('Triagem registrada!','ok');
   clsTriMdl();renderTri();
 }
@@ -3585,6 +3648,7 @@ async function savSf(){
     rec.palet_sync=novoSync||null;
     if(fbReady&&DB) await DB.ref('retorno_app/saida_fornecedores/'+id+'/palet_sync').set(novoSync||null);
     const i=SF_ALL.findIndex(x=>x.id===id);if(i>=0)SF_ALL[i]={...SF_ALL[i],...rec};
+    syncPatch('sf', id, rec);
     ntfy('Atualizado!','ok');
   }else{
     rec.id=crypto.randomUUID();rec.created_at=new Date().toISOString();
@@ -3667,5 +3731,5 @@ document.addEventListener('click',e=>{
 
 
 
-<script>console.log("%cGODMODE BUILD-CHECK v32 OK","color:#15803d;font-weight:bold;font-size:14px");</script>
+<script>console.log("%cGODMODE BUILD-CHECK v33 OK","color:#15803d;font-weight:bold;font-size:14px");</script>
 </body></html>
