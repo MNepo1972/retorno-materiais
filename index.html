@@ -1,10 +1,7 @@
 <!DOCTYPE html>
-<!-- saved from url=(0056)https://mnepomuceno20111972.github.io/retorno-materiais/ -->
 <!-- ============================================================
-     GODMODE - Retorno de Materiais | FONTE OFICIAL
-     NAO SALVAR PELO NAVEGADOR (Ctrl+S / Salvar pagina completa).
-     Isso reescreve os <script src> para .baixados e quebra o Firebase.
-     Editar SEMPRE a partir do RAW do GitHub.
+     GODMODE - Retorno de Materiais | FONTE OFICIAL v32
+     NAO SALVAR PELO NAVEGADOR (Ctrl+S). Isso grava o DOM e os dados.
      ============================================================ -->
 <html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
@@ -124,7 +121,7 @@ tr:hover td{background:#F4F2EA}
       <option value="365">Ultimo ano</option>
       <option value="3650">Tudo (pesado)</option>
     </select>
-    <span id="chapaBadge" onclick="chapaAsk(true)" title="Trocar identificação" style="cursor: pointer; font-size: 12px; color: var(--txt); border: 1px solid var(--bdr); border-radius: 20px; padding: 4px 12px; margin-right: 10px;">👤 MARCELO (ADMINISTRADOR) · 02201539</span>
+    <span id="chapaBadge" onclick="chapaAsk(true)" title="Trocar identificação" style="cursor: pointer; font-size: 12px; color: var(--txt); border: 1px solid var(--bdr); border-radius: 20px; padding: 4px 12px; margin-right: 10px;"></span>
     <span class="sdot" id="sdot" style="background: var(--grn);"></span>
     <span class="stxt" id="stxt">Firebase — 4863 reg. (30d) · +480 novos</span>
   </div>
@@ -2095,6 +2092,24 @@ function validarQtdLimite(qtd, campo){
   return true;
 }
 
+// Quantidades sao SEMPRE inteiras. Bloqueia digitacao tipo 3.08 / 2,42
+// que na verdade era 308 / 242 e contamina volume no ProdutiVix.
+function validarQtdInteira(valorBruto, campo){
+  const txt=String(valorBruto==null?'':valorBruto).trim();
+  if(!txt) return true;
+  if(/[.,]/.test(txt)){
+    const limpo=txt.replace(/[.,]/g,'');
+    ntfy(`"${campo}": quantidade nao pode ter virgula ou ponto. Voce digitou ${txt} — quis dizer ${limpo}?`,'er');
+    return false;
+  }
+  const n=Number(txt);
+  if(!Number.isInteger(n)){
+    ntfy(`"${campo}": informe um numero inteiro.`,'er');
+    return false;
+  }
+  return true;
+}
+
 // ===== SEGURANÇA: helper de exclusão (somente admin) =====
 function exigirAdmin(acao){
   if(isAdmin()) return true;
@@ -2114,6 +2129,11 @@ async function savRec(){
   if(!op){ntfy('Selecione o OPERADOR de carga','er');$('nOp').focus();return}
   if(!cf){ntfy('Selecione o CONFERENTE','er');$('nCf').focus();return}
   // coleta apenas materiais com alguma qtd preenchida
+  // Pre-validacao: quantidade inteira em todos os materiais preenchidos
+  for(const m of MATS_FORM){
+    if(!validarQtdInteira($('qf_'+m.id)?.value, m.key+' (Físico)')){$('qf_'+m.id)?.focus();return}
+    if(!validarQtdInteira($('qn_'+m.id)?.value, m.key+' (NF)')){$('qn_'+m.id)?.focus();return}
+  }
   const linhas=MATS_FORM.map(m=>{
     const qf=Number($('qf_'+m.id)?.value)||0;
     const qn=Number($('qn_'+m.id)?.value)||0;
@@ -2160,6 +2180,8 @@ function clsMdl(){$('eMdl').classList.remove('open')}
 
 async function updRec(){
   const id=$('eId').value;
+  if(!validarQtdInteira($('eQF').value,'Qtd Físico'))return;
+  if(!validarQtdInteira($('eQN').value,'Qtd NF'))return;
   const qf=Number($('eQF').value)||null,qn=Number($('eQN').value)||null;
   // Validação: mesmos campos obrigatórios do lançamento
   const dt=$('eDt').value,lja=$('eLja').value,nf=$('eNF').value.trim();
@@ -3542,6 +3564,8 @@ async function savSf(){
   if(!opExp){ntfy('Selecione o OPERADOR DE EXPEDIÇÃO','er');$('sfMExp').focus();return}
   if(!opConf){ntfy('Selecione o CONFERENTE','er');$('sfMConf').focus();return}
   if(!chapaExige())return;
+  if(!validarQtdInteira($('sfMEnt').value,'Entrada'))return;
+  if(!validarQtdInteira($('sfMSai').value,'Saída'))return;
   const ent=Number($('sfMEnt').value)||null,sai=Number($('sfMSai').value)||null;
   if(ent && !validarQtdLimite(ent,'Entrada'))return;
   if(sai && !validarQtdLimite(sai,'Saída'))return;
@@ -3643,4 +3667,5 @@ document.addEventListener('click',e=>{
 
 
 
+<script>console.log("%cGODMODE BUILD-CHECK v32 OK","color:#15803d;font-weight:bold;font-size:14px");</script>
 </body></html>
